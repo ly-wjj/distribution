@@ -629,6 +629,12 @@ type Middleware struct {
 	Options Parameters `yaml:"options"`
 }
 
+type RemoteRegistry struct {
+	URL string `yaml:"url"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+}
+
 // Proxy configures the registry as a pull through cache
 type Proxy struct {
 	// RemoteURL is the URL of the remote registry
@@ -639,6 +645,8 @@ type Proxy struct {
 
 	// Password of the hub user
 	Password string `yaml:"password"`
+
+	RemoteRegistries []RemoteRegistry `yaml:"remoteregistries"`
 }
 
 // Parse parses an input configuration yaml document into a Configuration struct

@@ -26,6 +26,7 @@ type proxyingRegistry struct {
 	scheduler      *scheduler.TTLExpirationScheduler
 	remoteURL      url.URL
 	authChallenger authChallenger
+	authChallengers map[string]authChallenger
 }
 
 // NewRegistryPullThroughCache creates a registry acting as a pull through cache
@@ -110,6 +111,104 @@ func NewRegistryPullThroughCache(ctx context.Context, registry distribution.Name
 	}, nil
 }
 
+func NewRegistryPullThroughCacheOnRemoteRegistries(ctx context.Context, registry distribution.Namespace, driver driver.StorageDriver, remoteRegistries []configuration.RemoteRegistry) (distribution.Namespace, error) {
+	type remote struct {
+		url *url.URL
+		rawUrl, username, passwd string
+	}
+	var remotes []remote
+	for _, remoteRegistry := range remoteRegistries {
+		remoteURL, err := url.Parse(remoteRegistry.URL)
+		if err != nil {
+			return nil, err
+		}
+		// TODO retrieve username/password
+		remotes = append(remotes, remote{
+			url: remoteURL,
+			rawUrl: remoteRegistry.URL,
+			username: remoteRegistry.Username,
+			passwd: remoteRegistry.Password,
+		})
+	}
+
+	v := storage.NewVacuum(ctx, driver)
+	s := scheduler.New(ctx, driver, "/scheduler-state.json")
+	s.OnBlobExpire(func(ref reference.Reference) error {
+		var r reference.Canonical
+		var ok bool
+		if r, ok = ref.(reference.Canonical); !ok {
+			return fmt.Errorf("unexpected reference type : %T", ref)
+		}
+
+		repo, err := registry.Repository(ctx, r)
+		if err != nil {
+			return err
+		}
+
+		blobs := repo.Blobs(ctx)
+
+		// Clear the repository reference and descriptor caches
+		err = blobs.Delete(ctx, r.Digest())
+		if err != nil {
+			return err
+		}
+
+		err = v.RemoveBlob(r.Digest().String())
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	s.OnManifestExpire(func(ref reference.Reference) error {
+		var r reference.Canonical
+		var ok bool
+		if r, ok = ref.(reference.Canonical); !ok {
+			return fmt.Errorf("unexpected reference type : %T", ref)
+		}
+
+		repo, err := registry.Repository(ctx, r)
+		if err != nil {
+			return err
+		}
+
+		manifests, err := repo.Manifests(ctx)
+		if err != nil {
+			return err
+		}
+		err = manifests.Delete(ctx, r.Digest())
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+
+	err := s.Start()
+	if err != nil {
+		return nil, err
+	}
+
+	remoteAuthChallengers := map[string]authChallenger{}
+	for _, rmt := range remotes {
+		cs, err := configureAuth(rmt.username, rmt.passwd, rmt.rawUrl)
+		if err != nil {
+			return nil, err
+		}
+		remoteAuthChallengers[rmt.url.Host] = &remoteAuthChallenger{
+			remoteURL: *rmt.url,
+			cm: challenge.NewSimpleManager(),
+			cs: cs,
+		}
+	}
+
+	return &proxyingRegistry{
+		embedded:  registry,
+		scheduler: s,
+		authChallengers: remoteAuthChallengers,
+	}, nil
+}
+
 func (pr *proxyingRegistry) Scope() distribution.Scope {
 	return distribution.GlobalScope
 }
@@ -120,6 +219,26 @@ func (pr *proxyingRegistry) Repositories(ctx context.Context, repos []string, la
 
 func (pr *proxyingRegistry) Repository(ctx context.Context, name reference.Named) (distribution.Repository, error) {
 	c := pr.authChallenger
+	chanllengers := pr.authChallengers
+	remoteUrlStr := pr.remoteURL
+	// remoteUrl is not set
+
+	if c == nil {
+		req, err := dcontext.GetRequest(ctx)
+		if err != nil {
+			return nil, err
+		}
+		endp := req.Header.Get("Seadent-Proxy-Domain")
+		c = chanllengers[endp]
+		rUrl, err := url.Parse(endp)
+		if err != nil {
+			return nil, err
+		}
+		remoteUrlStr = *rUrl
+		if c == nil {
+			return nil, fmt.Errorf("failed to find auth chanllengers for %s", endp)
+		}
+	}
 
 	tkopts := auth.TokenHandlerOptions{
 		Transport:   http.DefaultTransport,
@@ -146,7 +265,8 @@ func (pr *proxyingRegistry) Repository(ctx context.Context, name reference.Named
 		return nil, err
 	}
 
-	remoteRepo, err := client.NewRepository(name, pr.remoteURL.String(), tr)
+	// TODO add https
+	remoteRepo, err := client.NewRepository(name, remoteUrlStr.String(), tr)
 	if err != nil {
 		return nil, err
 	}
@@ -156,13 +276,15 @@ func (pr *proxyingRegistry) Repository(ctx context.Context, name reference.Named
 		return nil, err
 	}
 
+
+
 	return &proxiedRepository{
 		blobStore: &proxyBlobStore{
 			localStore:     localRepo.Blobs(ctx),
 			remoteStore:    remoteRepo.Blobs(ctx),
 			scheduler:      pr.scheduler,
 			repositoryName: name,
-			authChallenger: pr.authChallenger,
+			authChallenger: c,
 		},
 		manifests: &proxyManifestStore{
 			repositoryName:  name,
@@ -170,13 +292,13 @@ func (pr *proxyingRegistry) Repository(ctx context.Context, name reference.Named
 			remoteManifests: remoteManifests,
 			ctx:             ctx,
 			scheduler:       pr.scheduler,
-			authChallenger:  pr.authChallenger,
+			authChallenger:  c,
 		},
 		name: name,
 		tags: &proxyTagService{
 			localTags:      localRepo.Tags(ctx),
 			remoteTags:     remoteRepo.Tags(ctx),
-			authChallenger: pr.authChallenger,
+			authChallenger: c,
 		},
 	}, nil
 }

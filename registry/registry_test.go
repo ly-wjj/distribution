@@ -75,6 +75,36 @@ func setupRegistry(tlsCfg *registryTLSConfig, addr string) (*Registry, error) {
 	return NewRegistry(context.Background(), config)
 }
 
+func setupRegistryWithConfig(config configuration.Configuration) (*Registry, error) {
+	config.Storage = map[string]configuration.Parameters{"inmemory": map[string]interface{}{}}
+	config.HTTP.Addr = "0.0.0.0:5001"
+	return NewRegistry(context.Background(), &config)
+}
+
+func TestSetupRegistry(t *testing.T) {
+	config := &configuration.Configuration{}
+	err := yaml.Unmarshal([]byte(cacheConfig), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	registry, err := setupRegistryWithConfig(*config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// run registry server
+	var errchan chan error
+	go func() {
+		errchan <- registry.ListenAndServe()
+	}()
+	select {
+	case err = <-errchan:
+		t.Fatalf("Error listening: %v", err)
+	}
+
+}
+
 func TestGracefulShutdown(t *testing.T) {
 	registry, err := setupRegistry(nil, ":5000")
 	if err != nil {
