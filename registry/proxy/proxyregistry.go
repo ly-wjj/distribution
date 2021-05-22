@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/distribution/distribution/v3"
@@ -240,6 +241,9 @@ func (pr *proxyingRegistry) Repository(ctx context.Context, name reference.Named
 		c = challengers[endp]
 		if c == nil {
 			return nil, fmt.Errorf("failed to find auth chanllengers for %s", endp)
+		}
+		if !strings.HasPrefix(endp, "https://") && !strings.HasPrefix(endp, "http://") {
+			endp = "https://" + endp
 		}
 		rUrl, err := url.Parse(endp)
 		if err != nil {
