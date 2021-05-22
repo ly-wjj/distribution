@@ -646,6 +646,7 @@ type Proxy struct {
 	// Password of the hub user
 	Password string `yaml:"password"`
 
+	// RemoteRegistries for supporting multiple remote registry url
 	RemoteRegistries []RemoteRegistry `yaml:"remoteregistries"`
 }
 

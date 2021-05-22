@@ -332,6 +332,7 @@ func NewApp(ctx context.Context, config *configuration.Configuration) *App {
 		app.isCache = true
 		dcontext.GetLogger(app).Info("Registry configured as a proxy cache to ", config.Proxy.RemoteURL)
 	}
+
 	if len(config.Proxy.RemoteRegistries) != 0 {
 		app.registry, err = proxy.NewRegistryPullThroughCacheOnRemoteRegistries(ctx, app.registry, app.driver, config.Proxy.RemoteRegistries)
 		if err != nil {

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -218,26 +219,33 @@ func (pr *proxyingRegistry) Repositories(ctx context.Context, repos []string, la
 }
 
 func (pr *proxyingRegistry) Repository(ctx context.Context, name reference.Named) (distribution.Repository, error) {
-	c := pr.authChallenger
-	chanllengers := pr.authChallengers
-	remoteUrlStr := pr.remoteURL
-	// remoteUrl is not set
-
+	var (
+		c           = pr.authChallenger
+		challengers = pr.authChallengers
+		remoteUrl   = pr.remoteURL
+	)
+	// remoteUrl is not set, but the option remoteregistries is configured
 	if c == nil {
 		req, err := dcontext.GetRequest(ctx)
 		if err != nil {
 			return nil, err
 		}
-		endp := req.Header.Get("Seadent-Proxy-Domain")
-		c = chanllengers[endp]
+		// mirror-original-domain comes from docker daemon pull request
+		// hacked docker pull a.hub/ns/nginx:latest will add a.hub to the header of pull request
+		// so we can know where is the original domain for pull request
+		endp := req.Header.Get("mirror-original-domain")
+		if endp == "" {
+			return nil, errors.New("failed to get repository, err: mirror-original-domain is empty")
+		}
+		c = challengers[endp]
+		if c == nil {
+			return nil, fmt.Errorf("failed to find auth chanllengers for %s", endp)
+		}
 		rUrl, err := url.Parse(endp)
 		if err != nil {
 			return nil, err
 		}
-		remoteUrlStr = *rUrl
-		if c == nil {
-			return nil, fmt.Errorf("failed to find auth chanllengers for %s", endp)
-		}
+		remoteUrl = *rUrl
 	}
 
 	tkopts := auth.TokenHandlerOptions{
@@ -266,7 +274,7 @@ func (pr *proxyingRegistry) Repository(ctx context.Context, name reference.Named
 	}
 
 	// TODO add https
-	remoteRepo, err := client.NewRepository(name, remoteUrlStr.String(), tr)
+	remoteRepo, err := client.NewRepository(name, remoteUrl.String(), tr)
 	if err != nil {
 		return nil, err
 	}
